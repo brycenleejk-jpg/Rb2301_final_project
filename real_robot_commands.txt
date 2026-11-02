@@ -1,0 +1,136 @@
+RB2301 FINAL PROJECT - ROBOT 14, PYTHON + FOXY
+
+Robot: bingda@192.168.1.214
+Workspace: ~/Downloads/rb2301_fp_10
+ROS_DOMAIN_ID: 14
+ROS version: Foxy
+Middleware: rmw_fastrtps_cpp
+Control and visualization are Python programs. Their hardware runtime is shared
+in src/rb2301_fp/rb2301_fp/runtime.py. Hardware mode rejects another ROS version
+or middleware before creating ROS nodes. Optitrack/vrpn is not required.
+
+Connect your computer and robot to the lab network. The slides list the SSH
+password as: bingda. Use a separate terminal for each running service below.
+
+1. YOUR COMPUTER - COPY THE SAVED FILES
+
+cd /home/rmi-015/rb2301_final_project
+ssh bingda@192.168.1.214 'mkdir -p ~/Downloads/rb2301_fp_10/src'
+rsync -av src/rb2301_fp bingda@192.168.1.214:~/Downloads/rb2301_fp_10/src/
+rsync -av fp.sh bingda@192.168.1.214:~/Downloads/rb2301_fp_10/
+rsync -av --exclude=runs --exclude=__pycache__ visualization bingda@192.168.1.214:~/Downloads/rb2301_fp_10/
+
+2. SSH TERMINAL 1 - BUILD, THEN BASE CONTROL
+
+ssh bingda@192.168.1.214
+source /opt/ros/foxy/setup.bash
+export ROS_DOMAIN_ID=14
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+cd ~/Downloads/rb2301_fp_10
+colcon build --symlink-install
+chmod +x fp.sh
+basecontrol
+
+Leave this terminal running.
+
+3. SSH TERMINAL 2 - LIDAR
+
+ssh bingda@192.168.1.214
+source /opt/ros/foxy/setup.bash
+export ROS_DOMAIN_ID=14
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+rplidar
+
+Leave this terminal running. No vrpn terminal is needed.
+
+4. SSH TERMINAL 3 - MONITOR WITHOUT DRIVING
+
+ssh bingda@192.168.1.214
+source /opt/ros/foxy/setup.bash
+export ROS_DOMAIN_ID=14
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+cd ~/Downloads/rb2301_fp_10
+./fp.sh --hardware --calibrate
+
+This prints regions, scores and targets but sends only zero velocity.
+It does not wait for Optitrack or odometry. Missing/stale scans still stop it.
+
+5. TERMINAL 4 - LIVE PLOT USING THE SAME FOXY RUNTIME
+
+Close the old Jazzy laptop plot and any laptop Gazebo nodes using domain 14.
+FROM YOUR COMPUTER:
+
+export ROS_DOMAIN_ID=14
+ros2 daemon stop
+ssh -X bingda@192.168.1.214
+
+INSIDE THAT SSH SESSION:
+
+source /opt/ros/foxy/setup.bash
+export ROS_DOMAIN_ID=14
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+cd ~/Downloads/rb2301_fp_10
+source install/setup.bash
+echo "$DISPLAY"
+python3 visualization/live_map.py --robot 14
+
+The Python/ROS process runs on the robot. SSH forwards its window to your
+computer. X11 forwarding and a graphical Matplotlib backend must be available;
+if DISPLAY is empty or no graphical backend is found, fix that environment first.
+
+DEFAULT PLOT: current LiDAR hits, regions, scores, carrot, command and scan ages.
+Coordinates are relative to the robot now. It does not draw an invented global
+map, movement history or route without position measurements. Actual movement
+is labelled unmeasured. Case marks are recorded with timestamps, not locations.
+
+OPTIONAL ROUTE PLOT: only if the base publishes valid /odom messages, run:
+
+python3 visualization/live_map.py --robot 14 --pose-source odom
+
+This uses wheel odometry instead of Optitrack. If /odom is unavailable, use the
+default local view. Do not assume that /odom exists on the physical robot.
+
+Plot keys: 1 = mark gap stop; 2 = mark unwanted U-turn; m = mark other case;
+f = follow/whole view; q = save and close. Closing the plot does not stop the car.
+Logs are saved on the robot in ~/Downloads/rb2301_fp_10/visualization/runs/.
+
+6. SSH TERMINAL 3 - DRIVE AFTER CHECKING THE HARDWARE GEOMETRY
+
+Confirm the actual footprint and LiDAR mounting transform, and use a low speed
+for the first trial. Keep the existing 0.3 m/s hardware velocity cap.
+Press Ctrl+C to leave monitoring mode, then run:
+
+./fp.sh --hardware
+
+STOP: Ctrl+C in the controller terminal. Normal shutdown sends zero velocity.
+Then press q in the plot and Ctrl+C in the other service terminals.
+
+7. COPY LOGS BACK - ON YOUR COMPUTER
+
+rsync -av bingda@192.168.1.214:~/Downloads/rb2301_fp_10/visualization/runs/ /home/rmi-015/rb2301_final_project/visualization/runs/
+
+DIAGNOSTICS - IN A FOXY ROBOT TERMINAL USING DOMAIN 14
+
+ros2 topic info /scan
+ros2 topic echo /scan sensor_msgs/msg/LaserScan --no-arr
+
+Stop echo with Ctrl+C. These commands use Foxy syntax.
+
+The viewer's default LiDAR x offset is 0.11423 m and hardware yaw is 0 degrees,
+matching the controller's current assumptions, not a verified measurement.
+After measuring the mount, override the viewer with --lidar-x VALUE --lidar-y
+VALUE --lidar-yaw-deg VALUE and make navigation use the same verified transform.
+
+AFTER EDITING: save and repeat the applicable rsync commands from section 1.
+Rebuild after adding runtime.py for the first time. For subsequent changes to
+existing Python files, --symlink-install normally needs copying and restarting.
+
+SIMULATION ON THE COMPUTER: use ./gz_fp.sh and ./fp.sh --simulation in the
+simulator's ROS domain. Do not connect that Jazzy session to hardware domain 14.
+
+LAB ALIASES
+basecontrol = ros2 launch base_control_ros2 base_control.launch.py
+rplidar = ros2 launch rplidar_ros rplidar.launch.py
+
+The runtime checks prevent this setup from mixing its ROS versions. They do not
+prove that every DDS error is fixed; the original cause still needs a robot test.

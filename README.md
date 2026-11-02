@@ -34,7 +34,7 @@ Two terminals, both in the workspace folder:
 
 ```bash
 ./gz_fp.sh     # terminal 1: Gazebo. Wait until the course and robot appear
-./fp.sh        # terminal 2: your node
+./fp.sh --simulation  # terminal 2: your node
 ```
 
 The goal is to get past the moving obstacles. To start the robot somewhere else (for example past the gate), change `x:=` and `y:=` in `gz_fp.sh`; a commented example is in the file. Stop with `Ctrl+C`.
@@ -55,46 +55,79 @@ The unchanged starter code just drives forward at 0.1 m/s.
 - `ros2: command not found`: `source /opt/ros/jazzy/setup.bash`. Run the scripts from the workspace folder (the one with `install/`).
 - Gazebo window black, slow or crashing (virtual machine, no GPU): in `src/rb2301_gz/launch/fp_gazebo.launch.py` set `LIBGL_ALWAYS_SOFTWARE` to `"1"`.
 
-## Real robot
+## Real robot: Python on ROS 2 Foxy
 
-Same flow as the slides. `NN` is your robot's number in two digits (robot 7 is `07`, address `192.168.1.207`), `<group>` is your group number. You edit on your laptop and copy the package to the robot.
+The controller and viewer use Python. Hardware mode checks the shared settings
+in `src/rb2301_fp/rb2301_fp/runtime.py`: ROS 2 Foxy and
+`RMW_IMPLEMENTATION=rmw_fastrtps_cpp`. Run both ROS processes on the robot. Use
+SSH X11 forwarding to display the plot on your computer; do not start a Jazzy
+hardware viewer in the same ROS domain.
 
-**1. Make your workspace on the robot** (ssh in as usual):
+The current robot is **14**, at `bingda@192.168.1.214`, with workspace
+`~/Downloads/rb2301_fp_10`. Complete copy/build/run commands are in
+[real_robot_commands.txt](real_robot_commands.txt).
 
-```bash
-ssh bingda@192.168.1.2NN
-mkdir -p ~/Downloads/rb2301_fp_<group>/src
-```
+Hardware navigation uses `/scan` and publishes `/cmd_vel`. It does not subscribe
+to Optitrack and does not need a pose. Missing or stale LiDAR still stops the
+robot. The original frame-conversion helper functions remain in the starter file
+but are not used by hardware navigation.
 
-**2. Copy the package and the script** from your laptop's own terminal (not the ssh one). Repeat after every edit:
-
-```bash
-rsync -auvx --delete ~/Documents/rb2301/src/rb2301_fp bingda@192.168.1.2NN:~/Downloads/rb2301_fp_<group>/src
-rsync -auvx --delete ~/Documents/rb2301/fp.sh bingda@192.168.1.2NN:~/Downloads/rb2301_fp_<group>
-```
-
-**3. Build on the robot** (ssh terminal):
-
-```bash
-cd ~/Downloads/rb2301_fp_<group>
-colb                    # alias for colcon build --symlink-install
-```
-
-**4. Run each of these in its own ssh terminal** (or use `tmux` on the robot to split one ssh into several terminals):
+Save your code, then copy it FROM YOUR COMPUTER:
 
 ```bash
-basecontrol             # alias for ros2 launch base_control_ros2 base_control.launch.py
-rplidar                 # alias for ros2 launch rplidar_ros rplidar.launch.py
-vrpn                    # alias for ros2 launch vrpn_mocap client.launch.yaml server:=192.168.1.199 port:=3883
-cd ~/Downloads/rb2301_fp_<group> && ./fp.sh
+cd /home/rmi-015/rb2301_final_project
+ssh bingda@192.168.1.214 'mkdir -p ~/Downloads/rb2301_fp_10/src'
+rsync -av src/rb2301_fp bingda@192.168.1.214:~/Downloads/rb2301_fp_10/src/
+rsync -av fp.sh bingda@192.168.1.214:~/Downloads/rb2301_fp_10/
+rsync -av --exclude=runs --exclude=__pycache__ visualization bingda@192.168.1.214:~/Downloads/rb2301_fp_10/
 ```
 
-Add `--calibrate` to the last command (`./fp.sh --calibrate`) to only print your pose and never drive. Stay out of the Optitrack area while the robot runs.
+In every robot terminal, use:
 
-What is different from the simulation:
+```bash
+source /opt/ros/foxy/setup.bash
+export ROS_DOMAIN_ID=14
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+```
 
-- **Pose frame.** On the real robot `self.pose` is in the **CA2 maze frame**: metres from the corner of the CA2 maze, heading 0 along its +x axis and +90 along +y (counter-clockwise positive). The mapping from Optitrack to that frame is in `src/rb2301_fp/rb2301_fp/optitrack_variables.config`, already filled in. Don't edit it. If the calibration changes you will get a new file to drop in.
-- **Course coordinates.** In the simulation the robot starts at `(0, 0)` facing +x. If you want the same numbers on the real robot, `self.to_course()` converts a pose from the CA2 maze frame to the course frame. It needs the position of the course start point in the maze frame (`[course]` in the config), which is not set yet, so for now it returns the pose unchanged.
-- **Robot number.** The node reads the Optitrack topic of its own robot from `ROS_DOMAIN_ID` (already set on each robot) and prints it at start-up (`/vrpn_mocap/bingda_0NN/pose`).
-- **Rigid bodies** are created in Motive with the robot facing +y of the CA2 maze. If you reset one, face the robot +y first.
-- **Checking the pose.** Run the node with `--calibrate`, for example `./fp.sh --calibrate` on the robot. It prints the raw Optitrack pose and the maze-frame pose twice a second and never sends a drive command, so you can move the robot by hand and read off coordinates (for example the position of the gate). Start `rplidar` first, otherwise the node waits for the LiDAR.
+Build on the robot:
+
+```bash
+cd ~/Downloads/rb2301_fp_10
+colcon build --symlink-install
+chmod +x fp.sh
+```
+
+Run `basecontrol` and `rplidar` in separate SSH terminals. Optitrack/`vrpn` is not
+required. In the controller terminal, first inspect scans/targets while stopped:
+
+```bash
+cd ~/Downloads/rb2301_fp_10
+./fp.sh --hardware --calibrate
+```
+
+After verifying the physical footprint, LiDAR mount and sensor directions,
+stop monitoring with Ctrl+C and run:
+
+```bash
+./fp.sh --hardware
+```
+
+For the viewer, use `ssh -X bingda@192.168.1.214` from your computer, set the Foxy
+runtime in that SSH session, then run:
+
+```bash
+cd ~/Downloads/rb2301_fp_10
+source install/setup.bash
+python3 visualization/live_map.py --robot 14
+```
+
+The default hardware plot is robot-centred: current scan, candidate regions,
+reported scores and carrot. It records command/target snapshots and timestamped
+case marks, without inventing a position or travelled route. If the base actually
+publishes `/odom`, opt into route plotting with `--pose-source odom`.
+
+Use `--simulation` for Gazebo and `--hardware` for the robot; mode selection no
+longer depends on LiDAR ray count. The hardware velocity cap remains 0.3 m/s.
+Changing ROS environments is not a substitute for a hardware trial: the original
+DDS deserialization cause remains unconfirmed until tested on the robot.
