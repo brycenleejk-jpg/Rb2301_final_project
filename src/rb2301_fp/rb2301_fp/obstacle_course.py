@@ -21,33 +21,33 @@ from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
 
-# ========================= TUNE THESE SETTINGS =========================
+# Navigation settings (distances in metres, angles in degrees).
 PARAMS = {
-    "goal_x_m": 1.421,                 # Right from course bottom-left.
-    "goal_y_m": 0.831,                 # Up the course from bottom-left.
-    "course_frame_ready": True,      # True AFTER confirming origin and axes.
-    "goal_tolerance_m": 0.13,         # Stop translating within this distance.
-    "goal_heading_deg": -90,         # None = last intended approach heading.
-                                     # Or set course heading: 0=+x, 90=+y.
-    "check_distance_m": 0.30,         # Length of each straight clearance check.
-    "candidate_step_deg": 3.0,        # Smaller = more directions/computation.
-    "view_half_angle_deg": 90.0,      # Candidates: right 90 to left 90.
-    "robot_radius_m": 0.110,           # TOTAL clearance radius, including margin.
-    "depth_weight": 1.5,             # 0 disables depth preference.
-    "depth_cap_m": 3.00,              # Cap the depth reward at this distance.
-    "lidar_yaw_deg": 180.0,           # From friend's code: VERIFY mounting.
-    "lidar_x_m": 0.11423,             # From friend's code: VERIFY offset.
-    "lidar_y_m": 0.0,                 # Sensor's left offset from robot centre.
-    "forward_speed_mps": 0.30,        # Real translation remains capped at 0.3.
-    "goal_speed_gain": 0.6,           # Speed <= gain * distance to G.
-    "turn_gain": 1.0,                 # Turn rad/s per radian of error.
-    "min_turn_rps": 0.20,             # About 11.5 degrees/second
-    "max_turn_rps": 0.50,             # Turn speed limit; real robot remains capped at 0.5rad/s = 28.6deg/s.x   
-    "moving_turn_limit_deg": 50.0,    # Below this: allow checked forward + turn.
-    "final_heading_tolerance_deg": 3.0,
-    "sensor_timeout_s": 0.50,         # Stop if scan OR pose stops updating.
+    "goal_x_m": 5.5,                   # Goal x from course origin; +x points right.
+    "goal_y_m": -3.0,                  # Goal y from course origin; +y points up.
+    "course_frame_ready": True,        # Enable after checking course origin and axes.
+    "goal_tolerance_m": 0.13,           # Stop moving forward this close to the goal.
+    "goal_heading_deg": -90,           # Final angle: 0=+x, 90=+y; None=approach angle.
+    "check_distance_m": 0.30,          # How far ahead to check for obstacles.
+    "candidate_step_deg": 3.0,         # Smaller steps test more directions.
+    "view_half_angle_deg": 90.0,       # Search up to 90 degrees to either side.
+    "robot_radius_m": 0.110,           # Minimum radius used for collision checks.
+    "preferred_clearance_m": 0.130,    # Try this larger radius first for extra space.
+    "reduced_clearance_speed_mps": 0.10, # Speed cap when extra space is unavailable.
+    "depth_weight": 1.5,               # Preference for longer open paths; 0 disables it.
+    "depth_cap_m": 3.00,               # Paths beyond this earn no extra depth score.
+    "lidar_yaw_deg": 180.0,            # Correct for the backward-facing LiDAR.
+    "lidar_x_m": 0.11423,              # LiDAR position ahead of robot centre.
+    "lidar_y_m": 0.0,                  # LiDAR position left of robot centre.
+    "forward_speed_mps": 0.30,         # Maximum requested forward speed (m/s).
+    "goal_speed_gain": 0.6,            # Speed cap = gain * distance to goal.
+    "turn_gain": 1.0,                  # Turn rate = gain * angle error in radians.
+    "min_turn_rps": 0.20,              # Minimum turn rate when turning in place (rad/s).
+    "max_turn_rps": 0.50,              # Maximum turn rate (rad/s).
+    "moving_turn_limit_deg": 50.0,     # Turn in place at or above this angle error.
+    "final_heading_tolerance_deg": 3.0, # Allowed final angle error.
+    "sensor_timeout_s": 0.50,          # Stop if scan or pose is older than this.
 }
-# =====================================================================
 
 _PACKAGE_DIR = os.path.dirname(os.path.realpath(__file__))
 
@@ -58,7 +58,7 @@ def wrap_deg(angle):
 
 
 def optitrack_to_maze(x, y, heading_deg, frame):
-    """Express the OptiTrack pose in the calibrated CA2 maze frame."""
+    """Convert OptiTrack position and heading to maze coordinates."""
     dx, dy = x - frame["origin_x"], y - frame["origin_y"]
     r = math.radians(frame["rotation_deg"])
     c, s = math.cos(r), math.sin(r)
@@ -67,7 +67,7 @@ def optitrack_to_maze(x, y, heading_deg, frame):
 
 
 def maze_to_course(x, y, heading_deg, course):
-    """Express a maze pose relative to the course origin and axes."""
+    """Convert maze position and heading to course coordinates."""
     dx, dy = x - course["origin_x"], y - course["origin_y"]
     r = math.radians(course["rotation_deg"])
     c, s = math.cos(r), math.sin(r)
@@ -76,7 +76,7 @@ def maze_to_course(x, y, heading_deg, course):
 
 
 def load_frame(robot_number):
-    """Retain template calibration and per-robot heading corrections."""
+    """Load course calibration and this robot's heading correction."""
     parser = configparser.ConfigParser()
     path = os.path.join(_PACKAGE_DIR, "optitrack_variables.config")
     if not parser.read(path):
@@ -93,7 +93,7 @@ def load_frame(robot_number):
 
 
 class LidarNode(Node):
-    """Retain the template's simulation/real scan-length detection."""
+    """Identify simulation or real hardware from the number of scan readings."""
     def __init__(self):
         super().__init__("LidarNode")
         self.is_simulation = None
@@ -110,8 +110,7 @@ class ObstacleCourseNode(Node):
         self.is_simulation = is_simulation
         self.calibrate = calibrate
         self.max_translate_velocity = 1.4 if is_simulation else 0.3
-        # Measured circle about the robot reference centre; includes margin.
-        self.robot_radius = self.p["robot_radius_m"]
+        self.robot_radius = self.p["robot_radius_m"]  # Circle used to represent the robot.
         self.pose = self.raw_pose = self.scan_msg = None
         self.frame = self.course = None
         self.last_scan_time = self.last_pose_time = 0.0
@@ -133,7 +132,7 @@ class ObstacleCourseNode(Node):
         self.timer = self.create_timer(0.05, self.timer_callback)
 
     def sub_scan_callback(self, msg):
-        self.scan_msg = msg  # Keep full scan and angle metadata.
+        self.scan_msg = msg  # Save distances and scan angles together.
         self.last_scan_time = time.monotonic()
 
     @staticmethod
@@ -154,8 +153,7 @@ class ObstacleCourseNode(Node):
         self.last_pose_time = time.monotonic()
 
     def to_course(self):
-        # Simulation uses its odometry frame as course coordinates. Real
-        # OptiTrack uses the [course] transformation in the existing config.
+        # Real hardware needs the course transform; simulation already uses course coordinates.
         return (np.array(maze_to_course(*self.pose, self.course))
                 if self.course is not None else self.pose.copy())
 
@@ -166,76 +164,84 @@ class ObstacleCourseNode(Node):
         msg.linear.y = float(np.clip(y, -cap, cap))
         msg.angular.z = float(np.clip(turn, -2 * cap, 2 * cap))
         self.publisher_.publish(msg)
+        self._last_command = (msg.linear.x, msg.angular.z)  # Sent speeds for logging.
 
     def scan_geometry(self):
-        """Return finite obstacle points and their original ray angles."""
+        """Convert valid LiDAR readings to robot-relative obstacle points and ray angles."""
         scan = self.scan_msg
         ranges = np.asarray(scan.ranges, dtype=float)
         angles = (scan.angle_min + np.arange(len(ranges)) * scan.angle_increment
                   + math.radians(self.p["lidar_yaw_deg"]))
         angles = (angles + np.pi) % (2 * np.pi) - np.pi
-        # Ignore +/-inf and NaN completely: neither obstacle points nor targets.
-        # Do NOT replace inf with range_max.
+        # Discard invalid readings; missing readings do not count as open space.
         valid = (np.isfinite(ranges) & np.isfinite(angles) & (ranges > 0)
                  & (ranges >= scan.range_min) & (ranges <= scan.range_max))
         ranges, angles = ranges[valid], angles[valid]
+        # Account for the LiDAR's position relative to the robot centre.
         points = np.column_stack((ranges * np.cos(angles) + self.p["lidar_x_m"],
                                   ranges * np.sin(angles) + self.p["lidar_y_m"]))
         return points, angles
 
-    def path_is_clear(self, points, heading, distance):
-        """Check ALL finite points against a body-sized straight corridor."""
+    def path_is_clear(self, points, heading, distance, radius=None):
+        """Check whether the robot's circle can move along a straight path."""
         if len(points) == 0:
             return False
+        # Default to the robot radius; any supplied radius must be at least this large.
+        radius = self.robot_radius if radius is None else max(self.robot_radius, radius)
         c, s = math.cos(heading), math.sin(heading)
+        # Measure each obstacle along and across the proposed path.
         along = points[:, 0] * c + points[:, 1] * s
         side = -points[:, 0] * s + points[:, 1] * c
-        closest = np.clip(along, 0.0, distance)
-        return bool(np.all(np.hypot(along - closest, side) > self.robot_radius))
+        closest = np.clip(along, 0.0, distance)  # Nearest position on the path to each obstacle.
+        return bool(np.all(np.hypot(along - closest, side) > radius))
 
     def path_depth(self, points, heading):
-        """Estimated free travel before the body circle touches a finite hit."""
+        """Estimate how far the robot can travel before touching an obstacle."""
         c, s = math.cos(heading), math.sin(heading)
         along = points[:, 0] * c + points[:, 1] * s
         side = -points[:, 0] * s + points[:, 1] * c
         relevant = (along > 0.0) & (np.abs(side) <= self.robot_radius)
         if not np.any(relevant):
-            return 0.0  # Missing supporting returns do not earn maximum depth.
+            return 0.0  # No supporting readings means no depth reward.
+        # Allow for the robot's curved front edge. Used for scoring, not collision checks.
         contact = along[relevant] - np.sqrt(np.maximum(
             0.0, self.robot_radius**2 - side[relevant]**2))
         return float(np.clip(np.min(contact), 0.0, self.p["depth_cap_m"]))
 
-    def motion_is_clear(self, points, speed, turn, distance):
-        """Check the actual constant-speed curved command over the lookahead.
-
-        Sample centres at <=2 cm arc spacing. Add half that spacing to the
-        radius so obstacles between sample centres cannot slip through.
-        This is a short collision check, not a second path planner.
-        """
+    def motion_is_clear(self, points, speed, turn, distance, radius=None):
+        """Check the curved path produced by the requested forward and turn speeds."""
         if speed <= 0.0:
             return self.path_is_clear(points, 0.0, 0.0)
+        radius = self.robot_radius if radius is None else max(self.robot_radius, radius)
         if abs(turn) < 1e-6:
-            return self.path_is_clear(points, 0.0, distance)
+            return self.path_is_clear(points, 0.0, distance, radius=radius)
         if len(points) == 0:
             return False
-        count = max(1, int(math.ceil(distance / 0.02)))
+        count = max(1, int(math.ceil(distance / 0.02)))  # Check at most 2 cm apart.
         travel = np.linspace(0.0, distance, count + 1)
+        # Predict robot-centre positions along the curve.
         phi = turn * travel / speed
         centres = np.column_stack((speed / turn * np.sin(phi),
                                    speed / turn * (1.0 - np.cos(phi))))
         separation = np.linalg.norm(points[:, None, :] - centres[None, :, :], axis=2)
-        padding = distance / (2 * count)
-        return bool(np.all(separation > self.robot_radius + padding))
+        padding = distance / (2 * count)  # Extra radius covers gaps between checked positions.
+        return bool(np.all(separation > radius + padding))
 
-    def select_direction(self, points, angles, goal_bearing, distance):
-        """Choose by goal alignment plus a small capped depth reward."""
+    def select_direction(self, points, angles, goal_bearing, distance, radius=None):
+        """Choose a clear direction using goal alignment and open-path distance."""
+        preferred = max(self.robot_radius, self.p["preferred_clearance_m"])
+        # Try extra space first; a retry may use the robot radius, but never less.
+        radius = preferred if radius is None else max(self.robot_radius, radius)
+        self._selection_radius = radius  # Use the same radius for the motion check.
+        # Keep forward scan angles in radians, ordered right to left.
         view = np.sort(angles[np.abs(angles) <= math.radians(self.p["view_half_angle_deg"])])
-        self._candidate_count = 0
+        self._candidate_count = 0  # Reset the number of tested directions.
+        self._selection_summary = None
         if len(view) == 0:
+            # No valid forward readings means no direction can be selected.
             self.plot_paths(points, [], [], distance)
             return None
-        # Space candidates by angle. Also include measured directions nearest
-        # G and straight ahead. Each candidate is tested without region grouping.
+        # Space out scan directions; also include those closest to the goal and straight ahead.
         step = math.radians(self.p["candidate_step_deg"])
         candidates = []
         for angle in view:
@@ -248,25 +254,44 @@ class ObstacleCourseNode(Node):
         self._candidate_count = len(candidates)
         clear, scores = [], []
         best_direction, best_key = None, (-math.inf, -math.inf)
+        runner_direction, runner_key = None, (-math.inf, -math.inf)  # Second-best choice for logs.
         for angle in candidates:
-            # A high reward NEVER overrides a failed 0.5 m clearance check.
-            ok = self.path_is_clear(points, angle, distance)
+            # Reject blocked straight paths before scoring; check the actual curve later.
+            ok = self.path_is_clear(points, angle, distance, radius=radius)
             clear.append(ok)
-            scores.append(None)  # Rejected directions do not have a score.
+            scores.append(None)  # Blocked directions stay unscored.
             if not ok:
                 continue
             alignment = math.cos(angle - goal_bearing)
             depth_score = self.path_depth(points, angle) / self.p["depth_cap_m"]
-            score = alignment + self.p["depth_weight"] * depth_score
+            score = alignment + self.p["depth_weight"] * depth_score  # Reward goal alignment and space.
             scores[-1] = score
             key = (score, -abs(angle))  # Equal scores: prefer less turning.
             if key > best_key:
+                runner_key, runner_direction = best_key, best_direction  # Old best becomes second best.
                 best_key, best_direction = key, angle
-        self.plot_paths(points, candidates, clear, distance, scores)
+            elif key > runner_key:
+                runner_key, runner_direction = key, angle
+        # If no path fits with extra space, retry once using the robot radius.
+        if best_direction is None and radius > self.robot_radius:
+            return self.select_direction(points, angles, goal_bearing, distance,
+                                         radius=self.robot_radius)
+        self.plot_paths(points, candidates, clear, distance, scores)  # Show the final search result.
+        if best_direction is not None:
+            # Log the best and second-best choices to explain the selection.
+            self._selection_summary = (
+                f"selected={math.degrees(best_direction):+.1f}deg "
+                f"score={best_key[0]:.3f}")
+            if runner_direction is not None:
+                self._selection_summary += (
+                    f" | alternative={math.degrees(runner_direction):+.1f}deg "
+                    f"score={runner_key[0]:.3f} | gap={best_key[0] - runner_key[0]:.3f}")
+            mode = "reduced" if radius < preferred else "preferred"
+            self._selection_summary += f" | clearance={mode} ({radius:.3f}m)"
         return best_direction
 
     def plot_goal(self):
-        """Send course goal expressed relative to the current robot pose."""
+        """Send the goal's position relative to the robot to the viewer."""
         now = time.monotonic()
         valid = (self.pose is not None and np.all(np.isfinite(self.pose))
                  and now - self.last_pose_time <= self.p["sensor_timeout_s"])
@@ -285,23 +310,27 @@ class ObstacleCourseNode(Node):
         self.publish_plot(
             f"Goal: x={gx:+.3f} m, y={gy:+.3f} m, radius={self.robot_radius:.3f} m")
 
-    def blocked_reason(self, points, angles, distance):
-        """Two short reasons: overlap at the start, or no tested path fits."""
+    def blocked_reason(self, points):
+        """Explain why the robot stopped: missing data, nearby obstacle, or blocked paths."""
+        if len(points) == 0:
+            return "STOP: no forward candidates | finite_returns=0"
         nearest = float(np.min(np.linalg.norm(points, axis=1)))
         if nearest <= self.robot_radius:
-            # This circle includes the safety margin and all body corners.
-            # A point inside it blocks every path, even if behind the robot.
-            return (f"STOP: footprint blocked | nearest={nearest:.3f}m "
-                    f"| radius={self.robot_radius:.3f}m")
-        return f"STOP: no clear path | tested={getattr(self, '_candidate_count', 0)}"
+            # An obstacle inside the robot's circle blocks every direction.
+            return (f"STOP: footprint blocked | nearest={nearest:.4f}m "
+                    f"| radius={self.robot_radius:.4f}m")
+        tested = getattr(self, "_candidate_count", 0)
+        if tested == 0:
+            return (f"STOP: no forward candidates | finite_returns={len(points)} "
+                    "| forward_finite_returns=0")
+        # All tested directions were blocked.
+        message = (f"STOP: no clear forward path | tested={tested} "
+                   f"| nearest={nearest:.4f}m")
+        message += f" | required>{self.robot_radius:.4f}m"  # Minimum required clearance.
+        return message
 
     def plot_paths(self, points=None, candidates=(), clear=(), distance=0.5, scores=()):
-        """Send checked paths at 2 Hz; clear immediately when data is invalid.
-
-        Viewer data uses a separate topic to avoid long terminal messages.
-        Red means rejected, pale green means clear.
-        Infinite rays never become candidates or plotted obstacle points.
-        """
+        """Send paths to the viewer at 2 Hz; send active/cleared changes immediately."""
         now = time.monotonic()
         active = points is not None
         if (active == getattr(self, "_paths_active", None)
@@ -320,11 +349,7 @@ class ObstacleCourseNode(Node):
         self._paths_publisher.publish(String(data=message))
 
     def plot_direction(self, heading=None, distance=0.5):
-        """Viewer-only endpoint in ROBOT coordinates; never affects motion.
-
-        Send plotting data through a topic, without flooding the terminal.
-        Send target/no-target transitions immediately; otherwise update at 2 Hz.
-        """
+        """Show the chosen target relative to the robot; update at 2 Hz or on active/cleared changes."""
         now = time.monotonic()
         active = heading is not None
         if (active == getattr(self, "_plot_active", None)
@@ -338,7 +363,7 @@ class ObstacleCourseNode(Node):
         self.publish_plot(message)
 
     def publish_plot(self, message):
-        """Carrot/goal telemetry only; has no effect on navigation."""
+        """Publish target and goal positions for display only."""
         if not hasattr(self, "_plot_publisher"):
             self._plot_publisher = self.create_publisher(String, "navigation/plot", 10)
         self._plot_publisher.publish(String(data=message))
@@ -346,27 +371,41 @@ class ObstacleCourseNode(Node):
     def report_status(self, message):
         """Log once per second, or immediately when the reason changes."""
         now = time.monotonic()
-        # Ignore changing numbers so DRIVE/angle updates do not flood logs.
+        # Group logs by action so changing numbers do not trigger extra messages.
         reason = message.split("|")[0].split("=")[0].strip()
         if (reason != getattr(self, "_status_reason", None)
                 or now - getattr(self, "_status_time", 0.0) >= 1.0):
             self._status_reason, self._status_time = reason, now
+            speed, turn = getattr(self, "_last_command", (0.0, 0.0))
+            message += f" | v={speed:+.2f}m/s w={turn:+.2f}rad/s"
+            # Include position and goal distance only when pose data is recent and valid.
+            if (self.pose is not None and np.all(np.isfinite(self.pose))
+                    and now - self.last_pose_time <= self.p["sensor_timeout_s"]):
+                x, y, heading = self.to_course()
+                goal_distance = math.hypot(self.p["goal_x_m"] - x,
+                                           self.p["goal_y_m"] - y)
+                message += (f" | goal={goal_distance:.2f}m "
+                            f"| course=({x:+.3f},{y:+.3f})m heading={heading:+.1f}deg")
+            selection = getattr(self, "_selection_summary", None)
+            if message.startswith(("DRIVE", "ALIGN:")) and selection:
+                message += " | " + selection
             self.get_logger().info(message)
 
     def stop(self, reason, keep_paths=False):
         self.move_2D()
-        self.plot_direction()  # Clear the selected-direction display immediately.
+        self.plot_direction()  # Clear the displayed target.
         if not keep_paths:
             self.plot_paths()
         self.report_status(reason)
 
     def timer_callback(self):
-        self.plot_goal()  # Visible even while navigation is blocked or finished.
+        self._selection_summary = None  # Clear the previous update's selection log.
+        self.plot_goal()  # Keep the goal visible while stopped or finished.
         if self.done:
-            self.report_status("DONE: goal reached and heading aligned")
             self.plot_paths()
             self.plot_direction()
             self.move_2D()
+            self.report_status("DONE: goal reached and heading aligned")
             return
         now = time.monotonic()
         if (self.pose is None or not np.all(np.isfinite(self.pose))
@@ -390,15 +429,14 @@ class ObstacleCourseNode(Node):
             return
         points, angles = self.scan_geometry()
         if len(points) == 0:
-            self.stop("STOP: no clear path | tested=0 (no finite returns)")
+            self.stop(self.blocked_reason(points))
             return
 
         x, y, heading = self.to_course()
         dx, dy = self.p["goal_x_m"] - x, self.p["goal_y_m"] - y
         goal_distance = math.hypot(dx, dy)
         if goal_distance <= self.p["goal_tolerance_m"] and not self.finishing:
-            # Freeze arrival heading once; don't chase a noisy near-zero goal bearing.
-            self.finishing = True
+            self.finishing = True  # Set the final heading once to avoid jitter near the goal.
             configured = self.p["goal_heading_deg"]
             self.finish_heading_deg = (configured if configured is not None
                                        else self.approach_heading_deg)
@@ -407,67 +445,73 @@ class ObstacleCourseNode(Node):
 
         if self.finishing:
             self.plot_paths()
-            self.plot_direction()  # Final rotation is not a selected travel path.
+            self.plot_direction()  # Clear the travel target during the final turn.
             error_deg = wrap_deg(self.finish_heading_deg - heading)
             if abs(error_deg) <= self.p["final_heading_tolerance_deg"]:
                 self.done = True
                 self.stop("DONE: goal reached and heading aligned")
             elif self.path_is_clear(points, 0.0, 0.0):
-                # A zero-length corridor checks the body circle for rotation.
+                # Zero travel distance checks whether there is room to turn in place.
                 turn = np.clip(self.p["turn_gain"] * math.radians(error_deg),
                                -self.p["max_turn_rps"], self.p["max_turn_rps"])
                 self.move_2D(turn=float(turn))
-                self.report_status("ALIGN: final goal heading")
+                self.report_status(f"ALIGN: final goal heading | error={error_deg:+.1f}deg")
             else:
-                self.stop("STOP: footprint blocked during final alignment")
+                self.stop(self.blocked_reason(points) + " | stage=final alignment")
             return
 
         goal_bearing = math.radians(wrap_deg(math.degrees(math.atan2(dy, dx)) - heading))
         distance = min(self.p["check_distance_m"], goal_distance)
+        # Choose again each update; the robot does not keep a fixed passing side.
         selected = self.select_direction(points, angles, goal_bearing, distance)
         if selected is None:
-            self.stop(self.blocked_reason(points, angles, distance), keep_paths=True)
+            # No clear direction: stop instead of turning to search.
+            self.stop(self.blocked_reason(points), keep_paths=True)
             return
+        clearance = self._selection_radius
         self.approach_heading_deg = wrap_deg(heading + math.degrees(selected))
         error_deg = abs(math.degrees(selected))
         turn = float(np.clip(self.p["turn_gain"] * selected,
                              -min(self.p["max_turn_rps"], 2 * self.max_translate_velocity),
                              min(self.p["max_turn_rps"], 2 * self.max_translate_velocity)))
-        # Slow down as turning becomes sharper, and as G approaches.
+        # Slow down near the goal and for sharper turns.
         speed = min(self.p["forward_speed_mps"], self.max_translate_velocity,
                     self.p["goal_speed_gain"] * goal_distance)
         speed *= max(0.0, math.cos(selected))
+        if clearance < max(self.robot_radius, self.p["preferred_clearance_m"]):
+            # Use a lower speed when there is no room for the extra clearance.
+            speed = min(speed, self.p["reduced_clearance_speed_mps"])
 
+        # Turn first for large angle errors; otherwise try a checked curve, then straight ahead.
         if error_deg >= self.p["moving_turn_limit_deg"]:
-            reason = f"ALIGN: angle={error_deg:.1f}deg >= {self.p['moving_turn_limit_deg']:g}deg"
-        #elif True:
-        elif self.motion_is_clear(points, speed, turn, distance):
+            reason = ("ALIGN: turn toward selected direction "
+                      f"| angle={error_deg:.1f}deg >= {self.p['moving_turn_limit_deg']:g}deg")
+        elif self.motion_is_clear(points, speed, turn, distance, radius=clearance):
             self.move_2D(x=speed, turn=turn)
             self.plot_direction(selected, distance)
-            self.report_status(
-                f"DRIVE | speed={speed:.2f}m/s | goal={goal_distance:.2f}m")
+            self.report_status("DRIVE: curve clear")
             return
-        elif self.path_is_clear(points, 0.0, distance):
-            # Curve blocked, but straight ahead is clear.
-            self.move_2D(x=speed)
+        elif self.path_is_clear(points, 0.0, distance, radius=clearance):
+            self.move_2D(x=speed)  # Drive straight when the curve is blocked.
             self.approach_heading_deg = heading
             self.plot_direction(0.0, distance)
-            self.report_status(
-                f"DRIVE: straight path clear; curve blocked | speed={speed:.2f}m/s")
+            self.report_status("DRIVE: straight fallback; curve blocked")
             return
         else:
-            reason = "ALIGN: curved forward path blocked"
+            # Both driving options are blocked; face the chosen opening first.
+            reason = "ALIGN: curve blocked; turn toward selected direction"
 
-        # Large angle or blocked curve: stop translating, rotate if there is room.
+        # Turning in place uses the same robot circle; check it before turning.
         if not self.path_is_clear(points, 0.0, 0.0):
-            self.stop(self.blocked_reason(points, angles, distance), keep_paths=True)
+            self.stop(self.blocked_reason(points), keep_paths=True)
             return
+        # Keep the turn direction and limit its speed to the configured range.
         turn = float(np.sign(turn) * np.clip(
             abs(turn),
             self.p["min_turn_rps"],
             self.p["max_turn_rps"],
         ))
-        self.move_2D(turn=turn)
+        self.move_2D(turn=turn)  # Turn in place; check forward movement again next update.
         self.plot_direction(selected, distance)
         self.report_status(reason)
 
