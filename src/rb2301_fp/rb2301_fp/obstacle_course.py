@@ -36,6 +36,7 @@ PARAMS = {
     "reduced_clearance_speed_mps": 0.10, # Speed cap when extra space is unavailable.
     "depth_weight": 1.5,               # Preference for longer open paths; 0 disables it.
     "depth_cap_m": 3.00,               # Paths beyond this earn no extra depth score.
+    "similar_score_tolerance": 0.03,   # Keep a clear choice this close to the best score.
     "lidar_yaw_deg": 180.0,            # Correct for the backward-facing LiDAR.
     "lidar_x_m": 0.11423,              # LiDAR position ahead of robot centre.
     "lidar_y_m": 0.0,                  # LiDAR position left of robot centre.
@@ -116,6 +117,7 @@ class ObstacleCourseNode(Node):
         self.last_scan_time = self.last_pose_time = 0.0
         self.finishing = self.done = False
         self.approach_heading_deg = self.finish_heading_deg = None
+        self.selected_course_heading_deg = None  # Remember the chosen direction as the robot turns.
 
         self.sub_scan = self.create_subscription(LaserScan, "scan", self.sub_scan_callback, 2)
         if is_simulation:
@@ -227,7 +229,8 @@ class ObstacleCourseNode(Node):
         padding = distance / (2 * count)  # Extra radius covers gaps between checked positions.
         return bool(np.all(separation > radius + padding))
 
-    def select_direction(self, points, angles, goal_bearing, distance, radius=None):
+    def select_direction(self, points, angles, goal_bearing, distance, radius=None,
+                         previous_direction=None):
         """Choose a clear direction using goal alignment and open-path distance."""
         preferred = max(self.robot_radius, self.p["preferred_clearance_m"])
         # Try extra space first; a retry may use the robot radius, but never less.
@@ -237,6 +240,7 @@ class ObstacleCourseNode(Node):
         view = np.sort(angles[np.abs(angles) <= math.radians(self.p["view_half_angle_deg"])])
         self._candidate_count = 0  # Reset the number of tested directions.
         self._selection_summary = None
+        self._selection_held = False
         if len(view) == 0:
             # No valid forward readings means no direction can be selected.
             self.plot_paths(points, [], [], distance)
@@ -252,7 +256,7 @@ class ObstacleCourseNode(Node):
                            float(view[np.argmin(np.abs(view))])])
         candidates = list(dict.fromkeys(candidates))
         self._candidate_count = len(candidates)
-        clear, scores = [], []
+        clear, scores, depths = [], [], []
         best_direction, best_key = None, (-math.inf, -math.inf)
         runner_direction, runner_key = None, (-math.inf, -math.inf)  # Second-best choice for logs.
         for angle in candidates:
@@ -260,10 +264,12 @@ class ObstacleCourseNode(Node):
             ok = self.path_is_clear(points, angle, distance, radius=radius)
             clear.append(ok)
             scores.append(None)  # Blocked directions stay unscored.
+            depths.append(None)
             if not ok:
                 continue
             alignment = math.cos(angle - goal_bearing)
-            depth_score = self.path_depth(points, angle) / self.p["depth_cap_m"]
+            depths[-1] = self.path_depth(points, angle)  # Estimated free travel in metres.
+            depth_score = depths[-1] / self.p["depth_cap_m"]
             score = alignment + self.p["depth_weight"] * depth_score  # Reward goal alignment and space.
             scores[-1] = score
             key = (score, -abs(angle))  # Equal scores: prefer less turning.
@@ -274,20 +280,49 @@ class ObstacleCourseNode(Node):
                 runner_key, runner_direction = key, angle
         # If no path fits with extra space, retry once using the robot radius.
         if best_direction is None and radius > self.robot_radius:
+            self.get_logger().info(
+                f"SOFT LIMIT: no path at {radius:.2f}m; trying {self.robot_radius:.2f}m",
+                throttle_duration_sec=1.0)
             return self.select_direction(points, angles, goal_bearing, distance,
-                                         radius=self.robot_radius)
+                                         radius=self.robot_radius,
+                                         previous_direction=previous_direction)
         self.plot_paths(points, candidates, clear, distance, scores)  # Show the final search result.
         if best_direction is not None:
-            # Log the best and second-best choices to explain the selection.
+            # Only compare clear paths close to the highest combined score.
+            tolerance = max(0.0, self.p["similar_score_tolerance"])  # Dimensionless score band.
+            near_best = [i for i, ok in enumerate(clear)
+                         if ok and best_key[0] - scores[i] <= tolerance + 1e-12]
+            # New choice: prefer more depth, then score and less turning for ties.
+            chosen = max(near_best, key=lambda i: (depths[i], scores[i], -abs(candidates[i])))
+            if previous_direction is not None:
+                previous = min(range(len(candidates)),
+                               key=lambda i: abs(candidates[i] - previous_direction))
+                # Match the remembered heading to a nearby tested ray. It must
+                # still be clear and competitive; never lock onto a blocked path.
+                if (abs(candidates[previous] - previous_direction) <= step + 1e-9
+                        and previous in near_best):
+                    chosen = previous
+                    self._selection_held = True
+            selected = candidates[chosen]
+            # A retained/deeper choice can score slightly below the raw winner.
+            # Show the strongest OTHER option; gap remains the raw top-two gap.
+            alternative = runner_direction if selected == best_direction else best_direction
+            alternative_key = runner_key if selected == best_direction else best_key
+            choice = "kept" if self._selection_held else "depth"
+            if len(near_best) > 1:  # Only announce a tie-break when multiple scores are close.
+                self.get_logger().info(
+                    f"TIE BREAK: {'keeping direction' if self._selection_held else 'choosing greater depth'} "
+                    f"({math.degrees(selected):+.1f}deg)", throttle_duration_sec=1.0)
             self._selection_summary = (
-                f"selected={math.degrees(best_direction):+.1f}deg "
-                f"score={best_key[0]:.3f}")
-            if runner_direction is not None:
+                f"selected={math.degrees(selected):+.1f}deg "
+                f"score={scores[chosen]:.3f} depth={depths[chosen]:.2f}m | choice={choice}")
+            if alternative is not None:
                 self._selection_summary += (
-                    f" | alternative={math.degrees(runner_direction):+.1f}deg "
-                    f"score={runner_key[0]:.3f} | gap={best_key[0] - runner_key[0]:.3f}")
+                    f" | alternative={math.degrees(alternative):+.1f}deg "
+                    f"score={alternative_key[0]:.3f} | gap={best_key[0] - runner_key[0]:.3f}")
             mode = "reduced" if radius < preferred else "preferred"
             self._selection_summary += f" | clearance={mode} ({radius:.3f}m)"
+            return selected
         return best_direction
 
     def plot_goal(self):
@@ -392,6 +427,7 @@ class ObstacleCourseNode(Node):
             self.get_logger().info(message)
 
     def stop(self, reason, keep_paths=False):
+        self.selected_course_heading_deg = None  # Reconsider direction after a full stop.
         self.move_2D()
         self.plot_direction()  # Clear the displayed target.
         if not keep_paths:
@@ -462,13 +498,19 @@ class ObstacleCourseNode(Node):
 
         goal_bearing = math.radians(wrap_deg(math.degrees(math.atan2(dy, dx)) - heading))
         distance = min(self.p["check_distance_m"], goal_distance)
-        # Choose again each update; the robot does not keep a fixed passing side.
-        selected = self.select_direction(points, angles, goal_bearing, distance)
+        # Convert the remembered course heading to the robot's current frame.
+        previous_direction = (None if self.selected_course_heading_deg is None else
+                              math.radians(wrap_deg(self.selected_course_heading_deg - heading)))
+        selected = self.select_direction(points, angles, goal_bearing, distance,
+                                         previous_direction=previous_direction)
         if selected is None:
             # No clear direction: stop instead of turning to search.
             self.stop(self.blocked_reason(points), keep_paths=True)
             return
         clearance = self._selection_radius
+        if not self._selection_held:
+            self.selected_course_heading_deg = wrap_deg(heading + math.degrees(selected))
+        # Keep the original heading when holding; ray rounding must not slowly shift it.
         self.approach_heading_deg = wrap_deg(heading + math.degrees(selected))
         error_deg = abs(math.degrees(selected))
         turn = float(np.clip(self.p["turn_gain"] * selected,
