@@ -22,6 +22,7 @@ setup(
         'console_scripts': [
             'obstacle_course = rb2301_fp.obstacle_course:main',
             'obstacle_course_no_entry = rb2301_fp.obstacle_course_no_entry:main',
+            'moving_obstacle_test = rb2301_fp.moving_obstacle_test:main',
         ],
     },
 )

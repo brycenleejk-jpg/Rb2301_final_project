@@ -1,5 +1,112 @@
 # Live plot and case logger
 
+The [visited-overlap preview](../src/rb2301_fp/VISITED_OVERLAP_TRIAL.md) adds an
+independent `visited_check_start_m` (0.20 m) and `visited_check_distance_m` (0.80 m),
+visited percentages and click-to-inspect samples. It clips at obstructions and keeps travelled
+history after recovery trims the green trail. The current trial subtracts
+`visited_penalty_weight * visited_fraction` at new heading selections, with
+weight 2.2 initially (0 disables the penalty). Compare the controlled synthetic
+cases with `python3 visualization/live_map.py --demo --demo-visited penalty-off`
+and `--demo-visited penalty-on`; neither command connects to ROS or moves a robot.
+Percentages stay live during committed movement and recovery, and remain visible
+after `--step` stops. Their calculation does not reselect the held heading.
+
+## Current stage 1 and 2 preview
+
+By default the controller commands zero velocity and sends its calculations to
+this viewer. Follow [Stages 1 and 2](../src/rb2301_fp/STAGES_1_2.md) for the preview,
+or [Stage 3](../src/rb2301_fp/STAGE_3.md) for `--move`/`--step` movement tests.
+[Stage 4](../src/rb2301_fp/STAGE_4.md) adds an ordered trail: green dots after
+at least 5 cm displacement, with dotted circles of 10 cm radius in the fixed
+course inset. The circles are visual guides in normal navigation and the bounded
+retreat tests. The optional [turn-around recovery](../src/rb2301_fp/STAGE_7.md)
+uses their radius as the width of directional red-route memory.
+Turning adds no dots, and the inset keeps the whole recorded trail visible.
+The main LiDAR view also shows nearby green trail dots, transformed into the
+robot's current frame; dotted circles stay in the fixed-course inset.
+[Stages 5 and 6a](../src/rb2301_fp/STAGES_5_6A.md) show WAIT_BLOCKED/BLOCKED and
+the `--backtrack-one` test: an orange target, remaining retreat distance and
+red reached dots/circles. The test reverses to one dot, then holds a stop.
+[Stage 6b](../src/rb2301_fp/STAGE_6B.md) adds `--backtrack-dots 3`: the viewer
+shows `MULTI-DOT TEST`, the current orange target and reached progress such as
+`1 / 3`. Each reached dot/circle turns red; completion holds zero velocity.
+[Stage 6c](../src/rb2301_fp/STAGE_6C.md) adds `--backtrack-curves 3`. Its readout
+shows curved retreat or rear alignment, signed steering commands and the checked
+reverse arc in teal. The straight test modes remain available.
+`--recover` reverses until the blue turning envelope fits, turns toward the
+older route and resumes the current front-240-degree scoring. Red route history persists
+while new movement records green dots again. Grey rays are physical-clear paths
+excluded for returning toward a remembered failed end. During `TURN_AROUND`,
+the orange target is a heading rather than a translation carrot.
+The turn panel reports whether the turning-space recheck is ON or OFF. The
+initial check always runs; the current default skips space rechecks after the
+turn starts, while missing/stale sensors and the timeout still stop movement.
+During movement the viewer shows TURN/CURVE/DRIVE/DONE, a fixed orange committed
+heading, measured half-lookahead progress and the completed-advance count. The
+orange line length is the remaining advance distance; scores are paused during
+the attempt. A teal line shows the commanded robot-centre path over the short
+motion prediction. The movement readout includes the decision reason and linear/
+angular speed. The no-flag preview retains the candidate score table.
+
+The large view keeps the robot's nose pointing up. Green candidates fit soft
+clearance, amber candidates fit only hard clearance, and red candidates are
+blocked. All green and amber candidates compete; green receives the configured
+`soft_clearance_bonus`. The [sideways-clearance trial](../src/rb2301_fp/SIDE_CLEARANCE_TRIAL.md)
+adds a gradual reward up to `side_clearance_weight` between the hard and soft
+radii. Orange marks the selected preview path; purple marks the virtual goal.
+The score table shows the selected candidate (`*`), score, depth in metres and
+capped perpendicular side clearance in centimetres (`Side(cm)`). The two
+circles show hard (red) and soft (gold) clearance.
+
+The **fixed course inset** labels x as rightward and y as forward/up. It keeps
+course-forward (0 degrees) pointing up and course-right (-90 degrees) pointing
+right. Display x is `-relative_course_y`; display y is `relative_course_x`.
+This is a fixed display rotation;
+it does not rotate with the robot or change navigation coordinates. It shows relative position,
+measured robot heading, the fixed virtual heading, initial right-wall reference
+and a **vertical lateral switch line**. The switch uses rightward displacement,
+not forward movement. Returning across it from B to A restores A's virtual goal,
+including during retreat. A committed motion or recovery turn retains its saved
+target until completion. The readout shows segment A/B, course heading, display x/y,
+initial right distance, switch x and the selected path's course heading. The
+controller calls the template's `to_course()` before saving or subtracting poses.
+Current goals are fixed course -45 degrees for A and 0 degrees for B.
+
+```bash
+python3 visualization/live_map.py --simulation
+# Or render on the laptop from a robot, for example:
+python3 visualization/live_map.py --robot 14 --connect bingda@192.168.1.214
+# Synthetic controller snapshots, without ROS or a GUI:
+python3 visualization/live_map.py --demo --demo-segment A
+python3 visualization/live_map.py --demo --demo-segment B
+```
+
+Restart the viewer after updating it. The remaining notes describe earlier
+controllers and viewer features; the stage guide above is the current reference.
+
+## Earlier aiming display
+
+The current viewer includes a **robot-relative aiming compass** on the right,
+with the robot facing upward. Purple shows the angular virtual goal; dashed
+orange shows the controller's selected path. Their lengths are display cues,
+not distances. The readout gives both bearings as left/right angles, the active
+segment, and measured net right turn. If an update is missing or stale, its
+arrow disappears and the readout says `none / stale`.
+
+The main LiDAR plot also keeps the robot's front pointing up, with left and
+right matching the screen. Scans, the virtual goal, the selected carrot, and
+scored paths share the same display rotation. The LiDAR mounting correction
+is separate from this display rotation. The compass does not change navigation.
+Restart the viewer to load this display. Run it with
+`python3 visualization/live_map.py --simulation`, or from the laptop with
+`python3 visualization/live_map.py --robot 14 --connect bingda@192.168.1.214`.
+Use `--demo` to render synthetic example data without ROS.
+
+See [the virtual-goal guide](../src/rb2301_fp/VIRTUAL_GOAL.md) for current
+controller behavior. The older setup and case-logger notes below describe an
+earlier viewer; this script does not support all of those options.
+
+
 The viewer shows a LiDAR map, the robot's chosen carrot, and the openings and
 depths reported by the controller. The plot has no side panels or score charts.
 It never publishes driving commands. Both programs use Python.

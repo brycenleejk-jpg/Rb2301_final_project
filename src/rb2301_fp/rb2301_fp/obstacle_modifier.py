@@ -6,7 +6,7 @@ from shutil import copy2
 randomise_gate_position = True
 randomise_zigzag_size = True
 randomise_obstacle_speed = True
-obstacle_speed_multiplier = 2.0  # 1.0 = original speed; 2.0 = twice as fast.
+obstacle_speed_multiplier = 3.0  # 1.0 = original speed; 2.0 = twice as fast.
 
 spawn_static_obstacles = True
 randomise_static_obstacles = True
